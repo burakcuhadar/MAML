@@ -1,3 +1,3 @@
 # MAML
 
-Model Agnostic Meta-Learning Project will be used in Rare Disease Detection cases.
+Model Agnostic Meta-Learning Algorithm will be used in Rare Disease Detection cases.
