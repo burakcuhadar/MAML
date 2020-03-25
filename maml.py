@@ -143,7 +143,7 @@ class MAML:
                     learning_rate = tf.train.exponential_decay(
                         FLAGS.meta_lr,
                         global_step,
-                        decay_steps=150, # TODO
+                        decay_steps=FLAGS.decay_every,
                         decay_rate=0.1,
                         staircase=True)
                     optimizer = tf.train.AdamOptimizer(learning_rate)

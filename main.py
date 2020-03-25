@@ -54,6 +54,7 @@ flags.DEFINE_integer('update_batch_size', 5, 'number of examples used for inner 
 flags.DEFINE_float('update_lr', 1e-3, 'step size alpha for inner gradient update.') # 0.1 for omniglot
 flags.DEFINE_integer('num_updates', 1, 'number of inner gradient updates during training.')
 flags.DEFINE_bool('lr_decay', False, 'whether or not to decay learning rate')
+flags.DEFINE_integer('decay_every', 1000, 'number of iterations to decay the learning rate')
 
 ## Model options
 flags.DEFINE_string('norm', 'batch_norm', 'batch_norm, layer_norm, or None')
@@ -72,9 +73,12 @@ flags.DEFINE_bool('test_set', False, 'Set to true to test on the the test set, F
 flags.DEFINE_integer('train_update_batch_size', -1, 'number of examples used for gradient update during training (use if you want to test with a different number).')
 flags.DEFINE_float('train_update_lr', -1, 'value of inner gradient step step during training. (use if you want to test with a different value)') # 0.1 for omniglot
 
+# For isic
+NUM_TEST_POINTS = 30
+
 def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     SUMMARY_INTERVAL = 100
-    SAVE_INTERVAL = 1000
+    SAVE_INTERVAL = 500
 
     PRINT_INTERVAL = 100
     TEST_PRINT_INTERVAL = PRINT_INTERVAL*5
@@ -139,35 +143,40 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
 
         # sinusoid is infinite data, so no need to test on meta-validation set.
         if (itr!=0) and itr % TEST_PRINT_INTERVAL == 0 and FLAGS.datasource !='sinusoid':
-            if 'generate' not in dir(data_generator):
-                feed_dict = {}
-                if model.classification:
-                    input_tensors = [model.metaval_total_accuracy1, model.metaval_total_accuracies2[FLAGS.num_updates-1], model.summ_op, model.labelb, model.softmax_probs]
+            metaval_aucs = []
+            for _ in range(NUM_TEST_POINTS):
+                if 'generate' not in dir(data_generator):
+                    feed_dict = {}
+                    if model.classification:
+                        input_tensors = [model.metaval_total_accuracy1, model.metaval_total_accuracies2[FLAGS.num_updates-1], model.summ_op, model.labelb, model.softmax_probs]
+                    else:
+                        input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[FLAGS.num_updates-1], model.summ_op]
                 else:
-                    input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[FLAGS.num_updates-1], model.summ_op]
-            else:
-                batch_x, batch_y, amp, phase = data_generator.generate(train=False)
-                inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
-                inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :]
-                labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
-                labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
-                feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
-                if model.classification:
-                    input_tensors = [model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1],model.labelb, model.softmax_probs]
-                else:
-                    input_tensors = [model.total_loss1, model.total_losses2[FLAGS.num_updates-1]]
+                    batch_x, batch_y, amp, phase = data_generator.generate(train=False)
+                    inputa = batch_x[:, :num_classes*FLAGS.update_batch_size, :]
+                    inputb = batch_x[:, num_classes*FLAGS.update_batch_size:, :]
+                    labela = batch_y[:, :num_classes*FLAGS.update_batch_size, :]
+                    labelb = batch_y[:, num_classes*FLAGS.update_batch_size:, :]
+                    feed_dict = {model.inputa: inputa, model.inputb: inputb,  model.labela: labela, model.labelb: labelb, model.meta_lr: 0.0}
+                    if model.classification:
+                        input_tensors = [model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1],model.labelb, model.softmax_probs]
+                    else:
+                        input_tensors = [model.total_loss1, model.total_losses2[FLAGS.num_updates-1]]
 
-            result = sess.run(input_tensors, feed_dict)
-            #print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
-            # AUC score
-            labels = np.reshape(result[-2], [-1, FLAGS.num_classes])
-            probs = np.reshape(result[-1], [-1, FLAGS.num_classes])
-            print('Validation result(AUC): ' + str(roc_auc_score(labels, probs)))
+                result = sess.run(input_tensors, feed_dict)
+                #print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
+                # AUC score
+                labels = np.reshape(result[-2], [-1, FLAGS.num_classes])
+                probs = np.reshape(result[-1], [-1, FLAGS.num_classes])
+                metaval_aucs.append(roc_auc_score(labels, probs))
+
+            auc_mean = np.mean(metaval_aucs)
+            auc_std = np.std(metaval_aucs)
+            print('Validation result(AUC): mean:', str(auc_mean), ' std:', str(auc_std))
 
     saver.save(sess, FLAGS.logdir + '/' + exp_string +  '/model' + str(itr))
 
-# For isic
-NUM_TEST_POINTS = 30
+
 
 def test(model, saver, sess, exp_string, data_generator, test_num_updates=None):
     num_classes = data_generator.num_classes # for classification, 1 otherwise
