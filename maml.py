@@ -64,10 +64,19 @@ class MAML:
                 # Define the weights
                 self.weights = weights = self.construct_weights()
 
+            num_updates = max(self.test_num_updates, FLAGS.num_updates)
+
+            if FLAGS.mamlpp:
+                if 'inner_lrs' in dir(self):
+                    training_scope.reuse_variables()
+                    inner_lrs = self.inner_lrs
+                else:
+                    # Define the inner learning rates
+                    self.inner_lrs = inner_lrs = self.construct_inner_lrs(num_updates)
+
             # outputbs[i] and lossesb[i] is the output and loss after i+1 gradient updates
             lossesa, outputas, lossesb, outputbs = [], [], [], []
             accuraciesa, accuraciesb = [], []
-            num_updates = max(self.test_num_updates, FLAGS.num_updates)
             outputbs = [[]]*num_updates
             lossesb = [[]]*num_updates
             accuraciesb = [[]]*num_updates
@@ -87,7 +96,16 @@ class MAML:
                 if FLAGS.stop_grad:
                     grads = [tf.stop_gradient(grad) for grad in grads]
                 gradients = dict(zip(weights.keys(), grads))
-                fast_weights = dict(zip(weights.keys(), [weights[key] - self.update_lr*gradients[key] for key in weights.keys()]))
+
+                if FLAGS.mamlpp:
+                    fast_weights = dict(zip(weights.keys(),
+                                            [weights[key] - inner_lrs[key][0] * gradients[key] for key in
+                                             weights.keys()]))
+                else:
+                    fast_weights = dict(zip(weights.keys(),
+                                            [weights[key] - self.update_lr * gradients[key] for key in
+                                             weights.keys()]))
+
                 output = self.forward(inputb, fast_weights, reuse=True)
                 task_outputbs.append(output)
                 task_lossesb.append(self.loss_func(output, labelb))
@@ -98,7 +116,16 @@ class MAML:
                     if FLAGS.stop_grad:
                         grads = [tf.stop_gradient(grad) for grad in grads]
                     gradients = dict(zip(fast_weights.keys(), grads))
-                    fast_weights = dict(zip(fast_weights.keys(), [fast_weights[key] - self.update_lr*gradients[key] for key in fast_weights.keys()]))
+
+                    if FLAGS.mamlpp:
+                        fast_weights = dict(zip(fast_weights.keys(),
+                                                [fast_weights[key] - inner_lrs[key][j + 1] * gradients[key]
+                                                 for key in fast_weights.keys()]))
+                    else:
+                        fast_weights = dict(zip(fast_weights.keys(),
+                                                [fast_weights[key] - self.update_lr*gradients[key]
+                                                 for key in fast_weights.keys()]))
+
                     output = self.forward(inputb, fast_weights, reuse=True)
                     task_outputbs.append(output)
                     task_lossesb.append(self.loss_func(output, labelb))
@@ -238,4 +265,25 @@ class MAML:
 
         return tf.matmul(hidden4, weights['w5']) + weights['b5']
 
+    def construct_inner_lrs(self, num_inner_updates):
+        inner_lrs = {}
+        dtype = tf.float32
+        # Does not work when number of inner updates is different in meta-test time
+
+        inner_lrs['conv1'] = tf.get_variable('conv1_lr', initializer=[self.update_lr] * num_inner_updates,
+                                             dtype=dtype)
+        inner_lrs['b1'] = tf.get_variable('b1_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+        inner_lrs['conv2'] = tf.get_variable('conv2_lr', initializer=[self.update_lr] * num_inner_updates,
+                                             dtype=dtype)
+        inner_lrs['b2'] = tf.get_variable('b2_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+        inner_lrs['conv3'] = tf.get_variable('conv3_lr', initializer=[self.update_lr] * num_inner_updates,
+                                             dtype=dtype)
+        inner_lrs['b3'] = tf.get_variable('b3_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+        inner_lrs['conv4'] = tf.get_variable('conv4_lr', initializer=[self.update_lr] * num_inner_updates,
+                                             dtype=dtype)
+        inner_lrs['b4'] = tf.get_variable('b4_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+        inner_lrs['w5'] = tf.get_variable('w5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+        inner_lrs['b5'] = tf.get_variable('b5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+
+        return inner_lrs
 

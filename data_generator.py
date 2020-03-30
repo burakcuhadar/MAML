@@ -96,15 +96,17 @@ class DataGenerator(object):
             raise ValueError('Unrecognized data source')
 
 
-    def make_data_tensor(self, train=True):
+    def make_data_tensor(self, meta_iter_num=3000, train=True, num_test_batches=30):
         if train:
             folders = self.metatrain_character_folders
             # number of tasks, not number of meta-iterations. (divide by metabatch size to measure)
             # num_total_batches = 200000 TODO
-            num_total_batches = 3000 * 4
+            num_total_batches = meta_iter_num * self.batch_size
         else:
             folders = self.metaval_character_folders
-            num_total_batches = 30
+            num_total_batches = num_test_batches
+
+
 
         # make list of files
         print('Generating filenames')
@@ -134,7 +136,7 @@ class DataGenerator(object):
             image = tf.reshape(image, [self.dim_input])
             image = tf.cast(image, tf.float32) / 255.0
             image = 1.0 - image  # invert
-        num_preprocess_threads = 1 # TODO - enable this to be set to >1
+        num_preprocess_threads = 4 # TODO - enable this to be set to >1
         min_queue_examples = 256
         examples_per_batch = self.num_classes * self.num_samples_per_class
         batch_image_size = self.batch_size * examples_per_batch
