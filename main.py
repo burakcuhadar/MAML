@@ -42,7 +42,7 @@ FLAGS = flags.FLAGS
 ## Dataset/method options
 flags.DEFINE_string('datasource', 'isic', 'sinusoid or omniglot or miniimagenet or isic')
 flags.DEFINE_integer('num_classes', 5, 'number of classes used in classification (e.g. 5-way classification).')
-
+flags.DEFINE_integer('num_test_points', 30, 'number of batches used for testing')
 
 ## Training options
 flags.DEFINE_integer('pretrain_iterations', 0, 'number of pre-training iterations.')
@@ -58,7 +58,6 @@ flags.DEFINE_integer('decay_every', 1000, 'number of iterations to decay the lea
 ## Model options
 flags.DEFINE_string('norm', 'batch_norm', 'batch_norm, layer_norm, or None')
 flags.DEFINE_integer('num_filters', 64, 'number of filters for conv nets -- 32 for miniimagenet, 64 for omiglot.')
-flags.DEFINE_bool('conv', True, 'whether or not to use a convolutional network, only applicable in some cases')
 flags.DEFINE_bool('max_pool', False, 'Whether or not to use max pooling rather than strided convolutions')
 flags.DEFINE_bool('stop_grad', False, 'if True, do not use second derivatives in meta-optimization (for speed)')
 flags.DEFINE_bool('mamlpp', False, 'if True, use the improvements discussed in Antoniou et al.')
@@ -73,8 +72,8 @@ flags.DEFINE_bool('test_set', False, 'Set to true to test on the the test set, F
 flags.DEFINE_integer('train_update_batch_size', -1, 'number of examples used for gradient update during training (use if you want to test with a different number).')
 flags.DEFINE_float('train_update_lr', -1, 'value of inner gradient step step during training. (use if you want to test with a different value)') # 0.1 for omniglot
 
-# For isic
-NUM_TEST_POINTS = 30
+
+NUM_TEST_POINTS = FLAGS.num_test_points
 
 def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
     SUMMARY_INTERVAL = 100
@@ -106,8 +105,9 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
             if model.classification:
                 input_tensors.extend([model.total_accuracy1, model.total_accuracies2[FLAGS.num_updates-1]])
 
-        result = sess.run(input_tensors, feed_dict)
 
+
+        result = sess.run(input_tensors, feed_dict)
 
         if itr % SUMMARY_INTERVAL == 0:
             prelosses.append(result[-2])
@@ -130,6 +130,7 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
 
         if (itr!=0) and itr % TEST_PRINT_INTERVAL == 0 and FLAGS.datasource !='sinusoid':
             metaval_aucs = []
+            metaval_accuracies = []
             for _ in range(NUM_TEST_POINTS):
                 feed_dict = {}
                 if model.classification:
@@ -138,11 +139,18 @@ def train(model, saver, sess, exp_string, data_generator, resume_itr=0):
                     input_tensors = [model.metaval_total_loss1, model.metaval_total_losses2[FLAGS.num_updates-1], model.summ_op]
 
                 result = sess.run(input_tensors, feed_dict)
-                #print('Validation results: ' + str(result[0]) + ', ' + str(result[1]))
+
+                # Accuracy
+                metaval_accuracies.append(result[1])
+
                 # AUC score
                 labels = np.reshape(result[-2], [-1, FLAGS.num_classes])
                 probs = np.reshape(result[-1], [-1, FLAGS.num_classes])
                 metaval_aucs.append(roc_auc_score(labels, probs))
+
+            acc_mean = np.mean(metaval_accuracies)
+            acc_std = np.std(metaval_accuracies)
+            print('Validation results(accuracy): mean:', str(acc_mean), ' std:', str(acc_std))
 
             auc_mean = np.mean(metaval_aucs)
             auc_std = np.std(metaval_aucs)
@@ -181,8 +189,11 @@ def test(model, saver, sess, exp_string, data_generator, test_num_updates=None):
     print('Mean validation accuracy/loss, stddev, and confidence intervals')
     print((means, stds, ci95))
 
-    print('AUC score')
-    print(np.mean(metaval_aucs))
+    auc_mean = np.mean(metaval_aucs)
+    auc_std = np.std(metaval_aucs)
+    auc_ci95 = 1.96*auc_std/np.sqrt(NUM_TEST_POINTS)
+    print('AUC score, stddev and confidence interval')
+    print((auc_mean, auc_std, auc_ci95))
 
     out_filename = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.csv'
     out_pkl = FLAGS.logdir +'/'+ exp_string + '/' + 'test_ubs' + str(FLAGS.update_batch_size) + '_stepsize' + str(FLAGS.update_lr) + '.pkl'

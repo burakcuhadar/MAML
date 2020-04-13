@@ -27,14 +27,12 @@ class MAML:
         if FLAGS.datasource == 'omniglot' or FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'isic':
             self.loss_func = xent
             self.classification = True
-            if FLAGS.conv:
-                self.dim_hidden = FLAGS.num_filters
-                self.forward = self.forward_conv
-                self.construct_weights = self.construct_conv_weights
-            else:
-                self.dim_hidden = [256, 128, 64, 64]
-                self.forward=self.forward_fc
-                self.construct_weights = self.construct_fc_weights
+
+            self.dim_hidden = FLAGS.num_filters
+
+            self.forward = self.forward_conv#TODO: redundancy?
+            self.construct_weights = self.construct_conv_weights#TODO: redundancy?
+
             if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'isic':
                 self.channels = 3
             else:
@@ -74,6 +72,7 @@ class MAML:
                     # Define the inner learning rates
                     self.inner_lrs = inner_lrs = self.construct_inner_lrs(num_updates)
 
+
             # outputbs[i] and lossesb[i] is the output and loss after i+1 gradient updates
             lossesa, outputas, lossesb, outputbs = [], [], [], []
             accuraciesa, accuraciesb = [], []
@@ -85,9 +84,7 @@ class MAML:
                 """ Perform gradient descent for one task in the meta-batch. """
                 inputa, inputb, labela, labelb = inp
                 task_outputbs, task_lossesb = [], []
-
-                if self.classification:
-                    task_accuraciesb = []
+                task_accuraciesb = []
 
                 task_outputa = self.forward(inputa, weights, reuse=reuse)  # only reuse on the first iter
                 task_lossa = self.loss_func(task_outputa, labela)
@@ -105,6 +102,7 @@ class MAML:
                     fast_weights = dict(zip(weights.keys(),
                                             [weights[key] - self.update_lr * gradients[key] for key in
                                              weights.keys()]))
+
 
                 output = self.forward(inputb, fast_weights, reuse=True)
                 task_outputbs.append(output)
@@ -145,13 +143,11 @@ class MAML:
                 unused = task_metalearn((self.inputa[0], self.inputb[0], self.labela[0], self.labelb[0]), False)
 
             out_dtype = [tf.float32, [tf.float32]*num_updates, tf.float32, [tf.float32]*num_updates]
-            if self.classification:
-                out_dtype.extend([tf.float32, [tf.float32]*num_updates])
+            out_dtype.extend([tf.float32, [tf.float32]*num_updates])
             result = tf.map_fn(task_metalearn, elems=(self.inputa, self.inputb, self.labela, self.labelb), dtype=out_dtype, parallel_iterations=FLAGS.meta_batch_size)
-            if self.classification:
-                outputas, outputbs, lossesa, lossesb, accuraciesa, accuraciesb = result
-            else:
-                outputas, outputbs, lossesa, lossesb  = result
+            outputas, outputbs, lossesa, lossesb, accuraciesa, accuraciesb = result
+
+
 
         ## Performance & Optimization
         if 'train' in prefix:
@@ -205,23 +201,7 @@ class MAML:
             if self.classification:
                 tf.summary.scalar(prefix+'Post-update accuracy, step ' + str(j+1), total_accuracies2[j])
 
-    ### Network construction functions (fc networks and conv networks)
-    def construct_fc_weights(self):
-        weights = {}
-        weights['w1'] = tf.Variable(tf.truncated_normal([self.dim_input, self.dim_hidden[0]], stddev=0.01))
-        weights['b1'] = tf.Variable(tf.zeros([self.dim_hidden[0]]))
-        for i in range(1,len(self.dim_hidden)):
-            weights['w'+str(i+1)] = tf.Variable(tf.truncated_normal([self.dim_hidden[i-1], self.dim_hidden[i]], stddev=0.01))
-            weights['b'+str(i+1)] = tf.Variable(tf.zeros([self.dim_hidden[i]]))
-        weights['w'+str(len(self.dim_hidden)+1)] = tf.Variable(tf.truncated_normal([self.dim_hidden[-1], self.dim_output], stddev=0.01))
-        weights['b'+str(len(self.dim_hidden)+1)] = tf.Variable(tf.zeros([self.dim_output]))
-        return weights
-
-    def forward_fc(self, inp, weights, reuse=False):
-        hidden = normalize(tf.matmul(inp, weights['w1']) + weights['b1'], activation=tf.nn.relu, reuse=reuse, scope='0')
-        for i in range(1,len(self.dim_hidden)):
-            hidden = normalize(tf.matmul(hidden, weights['w'+str(i+1)]) + weights['b'+str(i+1)], activation=tf.nn.relu, reuse=reuse, scope=str(i+1))
-        return tf.matmul(hidden, weights['w'+str(len(self.dim_hidden)+1)]) + weights['b'+str(len(self.dim_hidden)+1)]
+    ### Network construction functions ###
 
     def construct_conv_weights(self):
         weights = {}
@@ -248,42 +228,62 @@ class MAML:
             weights['b5'] = tf.Variable(tf.zeros([self.dim_output]), name='b5')
         return weights
 
-    def forward_conv(self, inp, weights, reuse=False, scope=''):
+    def get_embeddings(self, inp, weights, reuse=False, scope=''):
         # reuse is for the normalization parameters.
         channels = self.channels
         inp = tf.reshape(inp, [-1, self.img_size, self.img_size, channels])
+        hidden1 = conv_block(inp, weights['conv1'], weights['b1'], reuse, scope + '0')
+        hidden2 = conv_block(hidden1, weights['conv2'], weights['b2'], reuse, scope + '1')
+        hidden3 = conv_block(hidden2, weights['conv3'], weights['b3'], reuse, scope + '2')
+        hidden4 = conv_block(hidden3, weights['conv4'], weights['b4'], reuse, scope + '3')
 
-        hidden1 = conv_block(inp, weights['conv1'], weights['b1'], reuse, scope+'0')
-        hidden2 = conv_block(hidden1, weights['conv2'], weights['b2'], reuse, scope+'1')
-        hidden3 = conv_block(hidden2, weights['conv3'], weights['b3'], reuse, scope+'2')
-        hidden4 = conv_block(hidden3, weights['conv4'], weights['b4'], reuse, scope+'3')
         if FLAGS.datasource == 'miniimagenet' or FLAGS.datasource == 'isic':
-            # last hidden layer is 6x6x64-ish, reshape to a vector
+            # last hidden layer is 5x5x64, reshape to a vector
             hidden4 = tf.reshape(hidden4, [-1, np.prod([int(dim) for dim in hidden4.get_shape()[1:]])])
         else:
             hidden4 = tf.reduce_mean(hidden4, [1, 2])
 
-        return tf.matmul(hidden4, weights['w5']) + weights['b5']
+        return  hidden4
+
+    def forward_conv(self, inp, weights, reuse=False, scope=''):
+        embeddings = self.get_embeddings(inp, weights, reuse=reuse, scope=scope)
+        return tf.matmul(embeddings, weights['w5']) + weights['b5']
+
+
+    def proto_init_fc_weights(self, weights, emb_in, labels, reuse=True, scope=''):
+        embeddings = self.get_embeddings(emb_in, self.weights, reuse=reuse, scope=scope)
+        prototypes = compute_prototypes(embeddings, labels)
+
+        w_init = tf.assign(self.weights['w5'], tf.transpose(2 * prototypes))
+        return w_init
+
+    def proto_init_fc_bias(self, bias, emb_in, labels, reuse=True, scope=''):
+        embeddings = self.get_embeddings(emb_in, self.weights, reuse=reuse, scope=scope)
+        prototypes = compute_prototypes(embeddings, labels)
+
+        b_init = tf.assign(self.weights['b5'], -tf.square(tf.norm(prototypes, axis=1)))
+        return b_init
+
 
     def construct_inner_lrs(self, num_inner_updates):
-        inner_lrs = {}
-        dtype = tf.float32
-        # Does not work when number of inner updates is different in meta-test time
+            inner_lrs = {}
+            dtype = tf.float32
+            # Does not work when number of inner updates is different in meta-test time
 
-        inner_lrs['conv1'] = tf.get_variable('conv1_lr', initializer=[self.update_lr] * num_inner_updates,
-                                             dtype=dtype)
-        inner_lrs['b1'] = tf.get_variable('b1_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
-        inner_lrs['conv2'] = tf.get_variable('conv2_lr', initializer=[self.update_lr] * num_inner_updates,
-                                             dtype=dtype)
-        inner_lrs['b2'] = tf.get_variable('b2_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
-        inner_lrs['conv3'] = tf.get_variable('conv3_lr', initializer=[self.update_lr] * num_inner_updates,
-                                             dtype=dtype)
-        inner_lrs['b3'] = tf.get_variable('b3_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
-        inner_lrs['conv4'] = tf.get_variable('conv4_lr', initializer=[self.update_lr] * num_inner_updates,
-                                             dtype=dtype)
-        inner_lrs['b4'] = tf.get_variable('b4_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
-        inner_lrs['w5'] = tf.get_variable('w5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
-        inner_lrs['b5'] = tf.get_variable('b5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['conv1'] = tf.get_variable('conv1_lr', initializer=[self.update_lr] * num_inner_updates,
+                                                 dtype=dtype)
+            inner_lrs['b1'] = tf.get_variable('b1_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['conv2'] = tf.get_variable('conv2_lr', initializer=[self.update_lr] * num_inner_updates,
+                                                 dtype=dtype)
+            inner_lrs['b2'] = tf.get_variable('b2_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['conv3'] = tf.get_variable('conv3_lr', initializer=[self.update_lr] * num_inner_updates,
+                                                 dtype=dtype)
+            inner_lrs['b3'] = tf.get_variable('b3_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['conv4'] = tf.get_variable('conv4_lr', initializer=[self.update_lr] * num_inner_updates,
+                                                 dtype=dtype)
+            inner_lrs['b4'] = tf.get_variable('b4_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['w5'] = tf.get_variable('w5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
+            inner_lrs['b5'] = tf.get_variable('b5_lr', initializer=[self.update_lr] * num_inner_updates, dtype=dtype)
 
-        return inner_lrs
+            return inner_lrs
 
